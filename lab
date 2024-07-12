@@ -1,0 +1,137 @@
+import numpy as np
+import pandas as pd
+from scipy.sparse.linalg import svds
+import matplotlib.pyplot as plt
+from sklearn.metrics import mean_squared_error
+
+#1task
+def svd_manual(A):
+    m, n = A.shape
+
+    # Compute A^T A and A A^T
+    ATA = np.dot(A.T, A)
+    AAT = np.dot(A, A.T)
+
+    # A^T A and A A^T eidvects and eigvals
+    eigval_AAT, eigvect_AAT = np.linalg.eig(AAT)
+    eigval_ATA, eigvect_ATA = np.linalg.eig(ATA)
+
+    # Sort eigenvalues and eigenvectors
+    sorted_indices_AAT = np.argsort(eigval_AAT)[::-1]
+    sorted_indices_ATA = np.argsort(eigval_ATA)[::-1]
+
+    eigval_AAT = eigval_AAT[sorted_indices_AAT]
+    eigvect_AAT = eigvect_AAT[:, sorted_indices_AAT]
+
+    eigval_ATA = eigval_ATA[sorted_indices_ATA]
+    eigvect_ATA = eigvect_ATA[:, sorted_indices_ATA]
+
+    # Form the Σ
+    singular_values = np.sqrt(np.maximum(eigval_ATA, 0))
+    min_dim = min(m, n)
+    Σ = np.zeros((min_dim, min_dim))
+    np.fill_diagonal(Σ, singular_values[:min_dim])
+
+    U = eigvect_AAT[:, :min_dim]
+    V = eigvect_ATA[:, :min_dim]
+
+    for i in range(min_dim):
+        if singular_values[i] > 1e-10:  # avoid division by zero for very small singular values
+            U[:, i] = np.dot(A, V[:, i]) / singular_values[i]
+
+    return U, Σ, V.T
+
+def check_svd(U, Sigma, VT, A):
+    A_reconstructed = np.dot( np.dot(U,Sigma), VT)
+    return np.allclose(A, A_reconstructed)
+
+A = np.array([[3,2,2], [2,3,-2]])
+U, Sigma, VT = svd_manual(A)
+
+print("U:", U)
+print("Sigma:", Sigma)
+print("V.T:", VT)
+is_correct = check_svd(U, Sigma, VT, A)
+print("SVD is correct:", is_correct)
+
+#2task
+
+ratings_df = pd.read_csv('ratings.csv')
+movies_df = pd.read_csv('movies.csv')
+ratings_matrix = ratings_df.pivot(index='userId', columns='movieId', values='rating')
+ratings_matrix1 = ratings_matrix.dropna(thresh=200, axis=0)
+ratings_matrix1 = ratings_matrix1.dropna(thresh=100, axis=1)
+def svd_matrix(ratings_matrix, k):
+    ratings_matrix_filled = ratings_matrix.fillna(2.5)
+    R = ratings_matrix_filled.values
+    user_ratings_mean = np.mean(R, axis=1)
+    R_demeaned = R - user_ratings_mean.reshape(-1, 1)
+    U, sigma, Vt = svds(R_demeaned, k=k)
+    return U, sigma, Vt, user_ratings_mean
+
+U, sigma, Vt, user_ratings_mean = svd_matrix(ratings_matrix1,3)
+fig = plt.figure()
+ax = fig.add_subplot(111, projection='3d')
+for i in range(min(len(U), 20)):
+    ax.scatter(U[i, 0], U[i, 1], U[i, 2])    
+ax.set_title('Users')
+plt.show()
+fig = plt.figure()
+ax = fig.add_subplot(111, projection='3d')
+
+for i in range(min(Vt.shape[1], 20)):
+    ax.scatter(Vt[0, i], Vt[1, i], Vt[2, i])
+ax.set_title('Films')
+plt.show()
+#3task
+def perform_svd_and_predict(ratings_matrix, k):
+    U, sigma, Vt, user_ratings_mean = svd_matrix(ratings_matrix, k)
+    all_user_predicted_ratings = np.dot(np.dot(U, np.diag(sigma)), Vt) + user_ratings_mean.reshape(-1, 1)
+    preds_df = pd.DataFrame(all_user_predicted_ratings, columns=ratings_matrix.columns, index=ratings_matrix.index)
+    return preds_df
+
+ratings_matrix2 = ratings_matrix.dropna(thresh=20, axis=0)
+ratings_matrix2 = ratings_matrix2.dropna(thresh=20, axis=1)
+U1, sigma1, Vt1, user_ratings_mean1 = svd_matrix(ratings_matrix2,3)
+
+
+ks = [3,5, 10, 20, 50, 100]
+errors = []
+for k in ks:
+    preds_df = perform_svd_and_predict(ratings_matrix, k)
+    original_ratings = ratings_matrix.values
+    predicted_ratings = preds_df.values
+    mask = ~np.isnan(original_ratings)
+    mse = mean_squared_error(original_ratings[mask], predicted_ratings[mask])
+    errors.append(mse)
+    print(f'k = {k}, Mean Squared Error: {mse}')
+
+plt.plot(ks, errors, marker='o')
+plt.xlabel('k (Number of latent factors)')
+plt.ylabel('Mean Squared Error')
+plt.title('Effect of k on SVD Prediction Accuracy')
+plt.show()
+
+
+optimal_k = ks[np.argmin(errors)]
+final_preds_df = perform_svd_and_predict(ratings_matrix2, optimal_k)
+preds_only_df = final_preds_df.mask(~ratings_matrix.isna())
+print("Predicted ratings :")
+print(final_preds_df)
+print("Predicted ratings only:")
+print(preds_only_df)
+
+def recommend_movies_for_user(preds_only_df, user_id, num_recommendations=10):
+    user_row = preds_only_df.loc[user_id].dropna().sort_values(ascending=False).head(num_recommendations)
+    movie_titles = movies_df.set_index('movieId').loc[user_row.index]
+    recommendations_table = pd.DataFrame({
+        'Movie Title': movie_titles['title'],
+        'Genres': movie_titles['genres']
+    })
+    return recommendations_table
+
+
+user_id = 29
+recommendations = recommend_movies_for_user(preds_only_df, user_id)
+print(f"Top 10 movie recommendations for User {user_id}:")
+print(recommendations)
